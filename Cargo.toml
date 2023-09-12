@@ -6,6 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cw721-base = { version = "0.15.0", features = ["library"] }
 cosmwasm-schema = "1.4.0"
 cosmwasm-std = "1.4.0"
 cw-storage-plus = "1.1.0"
+thiserror = "1.0.48"
+cw-utils = "1.0.1"
