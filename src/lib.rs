@@ -35,7 +35,7 @@ pub struct Metadata {
 pub type Extension = Option<Metadata>;
 
 // version info for migration info
-const CONTRACT_NAME: &str = "crates.io:cw721-non-transferable";
+const CONTRACT_NAME: &str = "crates.io:cw721-non-transferable-with-metadata-onchain";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Cw721NonTransferableContract<'a> = Cw721Contract<'a, Extension, Empty, Empty, Empty>;
