@@ -128,3 +128,55 @@ pub mod entry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
+    use cw721::Cw721Query;
+
+    const MINTER: &str = "minter";    
+
+    #[test]
+    fn use_metadata_extension() {
+        let mut deps = mock_dependencies();
+        let contract = Cw721NonTransferableContract::default();
+
+        let info = mock_info(MINTER, &[]);
+
+        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
+            name: "TEST TOKEN".to_string(),
+            symbol: "TEST".to_string(),
+            minter: MINTER.to_string(),
+        };
+
+        contract
+            .instantiate(deps.as_mut(), mock_env(), info.clone(), cw721_base_instantiate_msg)
+            .unwrap();
+        
+        let token_uri = None;
+        let metadata_extension = Some(Metadata {
+            description: Some("Description for metadata".into()),
+            name: Some("TEST".to_string()),
+            ..Metadata::default()
+        });
+
+        let token_id = "1";
+        let mint_msg = ExecuteMsg::Mint {
+            token_id: token_id.to_string(),
+            owner: MINTER.to_string(),
+            token_uri: token_uri.clone(),
+            extension: metadata_extension.clone(),
+        };
+        contract
+            .execute(deps.as_mut(), mock_env(), info, mint_msg)
+            .unwrap();
+
+        let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
+        
+        assert_eq!(res.token_uri, token_uri);
+        assert_eq!(res.extension, metadata_extension);
+
+    }
+}
