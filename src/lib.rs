@@ -2,7 +2,7 @@ pub use crate::msg::{InstantiateMsg, QueryMsg};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::Empty;
 pub use cw721_base::{
-    entry::{execute as _execute, query as _query},
+    entry::query as _query,
     ContractError, Cw721Contract, InstantiateMsg as Cw721BaseInstantiateMsg,
     MinterResponse,
 };
