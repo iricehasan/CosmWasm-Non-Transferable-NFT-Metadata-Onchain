@@ -134,12 +134,12 @@ mod tests {
     use super::*;
 
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::Addr;
+    use cosmwasm_std::{Addr, from_binary};
     use cw721::{
         ContractInfoResponse, Cw721Query, NftInfoResponse,
     };
     use cw721_base::OwnershipError;
-    
+    use crate::msg::AdminResponse;
 
     use crate::state::{Config, CONFIG};
     const MINTER: &str = "minter";
@@ -246,8 +246,10 @@ mod tests {
             token_uri: token_uri.clone(),
             extension: metadata_extension.clone(),
         };
+
+        let minter_info = mock_info(MINTER, &[]);        
         contract
-            .execute(deps.as_mut(), mock_env(), info, mint_msg.clone())
+            .execute(deps.as_mut(), mock_env(), minter_info, mint_msg.clone())
             .unwrap();
 
         let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
@@ -363,6 +365,34 @@ mod tests {
 
         assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner)); // so admin and the minter should be the same
 
+    }
+
+    #[test]
+    fn check_admin_response() {
+        let mut deps = mock_dependencies();
+
+        let msg = InstantiateMsg {
+            admin: Some(MINTER.to_string()),
+            name: "TEST TOKEN".to_string(),
+            symbol: "TEST".to_string(),
+            minter: MINTER.to_string(),
+        };
+
+        let config = Config {
+            admin: if let Some(admin) = &msg.admin {
+                Some(Addr::unchecked(admin.clone()))
+            } else {
+                None
+            },
+        };
+
+        CONFIG.save(&mut deps.storage, &config).unwrap();
+
+        let check_admin: AdminResponse = from_binary(&entry::query(deps.as_ref(), mock_env(), QueryMsg::Admin {}).unwrap()).unwrap();
+        assert_eq!(check_admin, AdminResponse {
+            admin: Some(MINTER.to_string())
+        });
+        
     }
 
 }
