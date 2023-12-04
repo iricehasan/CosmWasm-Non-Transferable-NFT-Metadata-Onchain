@@ -2,7 +2,7 @@
 A Non-Transferable NFT implementation by extending [`cw721-base`](https://github.com/CosmWasm/cw-nfts/tree/main/contracts/cw721-base) and using [`cw_ownable`](https://github.com/larry0x/cw-plus-plus/tree/main/packages/ownable) functions:
 
 ```rust
-initialize_owner(deps.storage, deps.api, Some(info.sender.as_str().clone()))?;
+initialize_owner(deps.storage, deps.api, msg.admin.as_deref())?;
 ```
 
 and 
