@@ -1,16 +1,37 @@
 [package]
-name = "CosmWasm-Quadratic-Funding-NFT-Part"
+name = "nft"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+
+[features]
+# for more explicit tests, cargo test --features=backtraces
+backtraces = ["cosmwasm-std/backtraces"]
+# use library feature to disable all instantiate/execute/query exports
+library = []
 
 [dependencies]
-cosmwasm-schema = "1.4.0"
-cosmwasm-std = "1.4.0"
+cosmwasm-schema = "1.2.1"
+cosmwasm-std = "1.2.1"
 cw-storage-plus = "1.1.0"
 thiserror = "1.0.48"
 cw-utils = "1.0.1"
 cw721 = "0.18.0"
 cw721-base = { version = "0.18.0", features = ["library"] }
 cw2 = "1.1.0"
+cw-ownable = "0.5.1"
+
+
+[profile.release]
+codegen-units = 1
+incremental   = false
+rpath            = false
+lto              = true
+overflow-checks  = true
+opt-level        = 3
+debug            = false
+debug-assertions = false

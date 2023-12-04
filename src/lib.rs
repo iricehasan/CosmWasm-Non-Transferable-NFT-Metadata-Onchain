@@ -1,15 +1,9 @@
-pub use crate::msg::{InstantiateMsg, QueryMsg};
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::Empty;
+use cw_ownable::{OwnershipError, assert_owner, initialize_owner};
 pub use cw721_base::{
-    entry::query as _query,
-    ContractError, Cw721Contract, InstantiateMsg as Cw721BaseInstantiateMsg,
-    MinterResponse,
+    Cw721Contract, InstantiateMsg, MinterResponse, ContractError
 };
-
-pub mod msg;
-pub mod query;
-pub mod state;
 
 #[cw_serde]
 pub struct Trait {
@@ -28,8 +22,6 @@ pub struct Metadata {
     pub name: Option<String>,
     pub attributes: Option<Vec<Trait>>,
     pub background_color: Option<String>,
-    pub animation_url: Option<String>,
-    pub youtube_url: Option<String>,
 }
 
 pub type Extension = Option<Metadata>;
@@ -40,14 +32,14 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Cw721NonTransferableContract<'a> = Cw721Contract<'a, Extension, Empty, Empty, Empty>;
 pub type ExecuteMsg = cw721_base::ExecuteMsg<Extension, Empty>;
+pub type QueryMsg = cw721_base::QueryMsg<Empty>;
 
 #[cfg(not(feature = "library"))]
 pub mod entry {
     use super::*;
-    use crate::query::admin;
-    use crate::state::{Config, CONFIG};
+
     use cosmwasm_std::{
-        entry_point, to_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult,
+        entry_point, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult
     };
 
     #[entry_point]
@@ -56,21 +48,13 @@ pub mod entry {
         env: Env,
         info: MessageInfo,
         msg: InstantiateMsg,
-    ) -> Result<Response, ContractError> {
-        let admin_addr: Option<Addr> = msg
-            .admin
-            .as_deref()
-            .map(|s| deps.api.addr_validate(s))
-            .transpose()?;
-
-        let config = Config { admin: admin_addr };
-
-        CONFIG.save(deps.storage, &config)?;
-
-        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
+    ) -> Result<Response, OwnershipError> {
+        initialize_owner(deps.storage, deps.api, Some(info.sender.as_str().clone()))?;
+        
+        let cw721_base_instantiate_msg = InstantiateMsg {
             name: msg.name,
             symbol: msg.symbol,
-            minter: msg.minter,
+            minter: info.sender.to_string().clone(),
         };
 
         Cw721NonTransferableContract::default().instantiate(
@@ -93,40 +77,21 @@ pub mod entry {
         env: Env,
         info: MessageInfo,
         msg: ExecuteMsg,
-    ) -> Result<Response, cw721_base::ContractError> {
-        let config = CONFIG.load(deps.storage)?;
-        match config.admin {
-            Some(admin) => {
-                if admin == info.sender {
-                    Cw721NonTransferableContract::default().execute(deps, env, info, msg)
-                } else {
-                    Err(ContractError::Ownership(
-                        cw721_base::OwnershipError::NotOwner,
-                    ))
-                }
-            }
-            None => match msg {
-                ExecuteMsg::Mint {
-                    token_id,
-                    owner,
-                    token_uri,
-                    extension,
-                } => Cw721NonTransferableContract::default()
-                    .mint(deps, info, token_id, owner, token_uri, extension),
-                _ => Err(ContractError::Ownership(
-                    cw721_base::OwnershipError::NotOwner,
-                )),
-            },
-        }
-    }
+    ) -> Result<Response, ContractError> {
+        
+        assert_owner(deps.storage, &info.sender)?;
 
+        Cw721NonTransferableContract::default().execute(deps, env, info, msg).map_err(Into::into)
+        
+    }
+    
     #[entry_point]
     pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
-        match msg {
-            QueryMsg::Admin {} => to_binary(&admin(deps)?),
-            _ => _query(deps, env, msg.into()),
-        }
+        
+        Cw721NonTransferableContract::default().query(deps, env, msg)
+        
     }
+            
 }
 
 #[cfg(test)]
@@ -134,265 +99,157 @@ mod tests {
     use super::*;
 
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{Addr, from_binary};
-    use cw721::{
-        ContractInfoResponse, Cw721Query, NftInfoResponse,
-    };
-    use cw721_base::OwnershipError;
-    use crate::msg::AdminResponse;
+    use cosmwasm_std::to_binary;
+    use cw721::Cw721Query;
 
-    use crate::state::{Config, CONFIG};
-    const MINTER: &str = "minter";
+    const CREATOR: &str = "creator";
 
     #[test]
-    fn query_with_admin() {
+    fn only_owner_can_mint() {
         let mut deps = mock_dependencies();
         let contract = Cw721NonTransferableContract::default();
 
-        let msg = InstantiateMsg {
-            admin: Some(MINTER.to_string()),
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
+        let info = mock_info(CREATOR, &[]);
+        let init_msg = InstantiateMsg {
+            name: "SpaceShips".to_string(),
+            symbol: "SPACE".to_string(),
+            minter: CREATOR.to_string(),
+        };
+        entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
+
+        let token_id = "Enterprise";
+        let token_uri = Some("https://starships.example.com/Starship/Enterprise.json".into());
+        let extension = Some(Metadata {
+            description: Some("Spaceship with Warp Drive".into()),
+            name: Some("Starship USS Enterprise".to_string()),
+            ..Metadata::default()
+        });
+        let exec_msg = ExecuteMsg::Mint {
+            token_id: token_id.to_string(),
+            owner: "john".to_string(),
+            token_uri: token_uri.clone(),
+            extension: extension.clone(),
         };
 
-        let config = Config {
-            admin: if let Some(admin) = &msg.admin {
-                Some(Addr::unchecked(admin.clone()))
-            } else {
-                None
-            },
-        };
+        // random cannot mint
+        let random = mock_info("random", &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, exec_msg.clone())
+            .unwrap_err();
+        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
 
-        CONFIG.save(&mut deps.storage, &config).unwrap();
+        // creator can mint
+        let allowed = mock_info(CREATOR, &[]);
+        let _ = entry::execute(deps.as_mut(), mock_env(), allowed, exec_msg).unwrap();
 
-        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
-        };
-
-        let env = mock_env();
-        let info = mock_info("creator", &[]);
-
-        let res = contract.instantiate(deps.as_mut(), env.clone(), info.clone(), cw721_base_instantiate_msg).unwrap();
-        assert_eq!(0, res.messages.len());
-
-        // query the state
-        let state = CONFIG.load(&deps.storage).unwrap();
-        assert_eq!(
-            state,
-            Config {
-                admin: Some(Addr::unchecked("minter"))
-            }
-        );
-
+        // ensure num tokens increases
+        let count = contract.num_tokens(deps.as_ref()).unwrap();
+        assert_eq!(1, count.count);
+        
+        let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
+        assert_eq!(res.token_uri, token_uri);
+        assert_eq!(res.extension, extension);
     }
 
     #[test]
-    fn use_metadata_extension() {
+    fn transferring_nft() {
         let mut deps = mock_dependencies();
-        let contract = Cw721NonTransferableContract::default();
 
-        let info = mock_info("creator", &[]);
-
-        let msg = InstantiateMsg {
-            admin: Some(MINTER.to_string()),
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
+        let info = mock_info(CREATOR, &[]);
+        let init_msg = InstantiateMsg {
+            name: "SpaceShips".to_string(),
+            symbol: "SPACE".to_string(),
+            minter: CREATOR.to_string(),
         };
+        entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
 
-        let config = Config {
-            admin: if let Some(admin) = &msg.admin {
-                Some(Addr::unchecked(admin.clone()))
-            } else {
-                None
-            },
-        };
-
-        CONFIG.save(&mut deps.storage, &config).unwrap();
-
-         // query the state
-        let state = CONFIG.load(&deps.storage).unwrap();
-        assert_eq!(
-            state,
-            Config {
-                admin: Some(Addr::unchecked("minter"))
-            }
-        );
-
-        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
-        };
-
-        contract
-            .instantiate(deps.as_mut(), mock_env(), info.clone(), cw721_base_instantiate_msg)
-            .unwrap();
-        
-        let token_uri = None;
-        let metadata_extension = Some(Metadata {
-            description: Some("Description for metadata".into()),
-            name: Some("TEST".to_string()),
+        // Mint a token
+        let token_id = "Enterprise";
+        let token_uri = Some("https://starships.example.com/Starship/Enterprise.json".into());
+        let extension = Some(Metadata {
+            description: Some("Spaceship with Warp Drive".into()),
+            name: Some("Starship USS Enterprise".to_string()),
             ..Metadata::default()
         });
-
-        let token_id = "1";
-        let mint_msg = ExecuteMsg::Mint {
+        let exec_msg = ExecuteMsg::Mint {
             token_id: token_id.to_string(),
-            owner: MINTER.to_string(),
+            owner: "john".to_string(),
             token_uri: token_uri.clone(),
-            extension: metadata_extension.clone(),
+            extension: extension.clone(),
         };
 
-        let minter_info = mock_info(MINTER, &[]);        
-        contract
-            .execute(deps.as_mut(), mock_env(), minter_info, mint_msg.clone())
-            .unwrap();
+        entry::execute(deps.as_mut(), mock_env(), info.clone(), exec_msg).unwrap();
 
-        let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
-        
-        assert_eq!(res.token_uri, token_uri);
-        assert_eq!(res.extension, metadata_extension);
+        // random cannot transfer
+        let random = mock_info("random", &[]);
+        let transfer_msg = ExecuteMsg::TransferNft {
+            recipient: String::from("random"),
+            token_id: token_id.to_string().clone(),
+        };
 
-        // query the minter
-        let res = contract.minter(deps.as_ref()).unwrap();
-        assert_eq!(Some(MINTER.to_string()), res.minter);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, transfer_msg)
+            .unwrap_err();
+        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
 
-        // query others
-        
-        let info = contract.contract_info(deps.as_ref()).unwrap();
-        assert_eq!(
-            info,
-            ContractInfoResponse {
-                name: "TEST TOKEN".to_string(),
-                symbol: "TEST".to_string(),
-            }
-        );
+        // owner of the NFT also cannot transfer, i.e. it is non-transferable
+        let john = mock_info("john", &[]);
+        let transfer_msg = ExecuteMsg::TransferNft {
+            recipient: String::from("random"),
+            token_id: token_id.to_string().clone(),
+        };
 
-        let count = contract.num_tokens(deps.as_ref()).unwrap();
-        assert_eq!(1, count.count);
-    
-        // list the token_ids
-        let tokens = contract.all_tokens(deps.as_ref(), None, None).unwrap();
-        assert_eq!(1, tokens.tokens.len());
-
-        // control nft_info
-        let nft_info = contract.nft_info(deps.as_ref(), token_id.clone().to_string()).unwrap();
-        assert_eq!(
-            nft_info,
-            NftInfoResponse::<Extension> {
-                token_uri: None,
-                extension: metadata_extension.clone(),
-            }
-        );
-
-        // RANDOM cannot mint
-        let random = mock_info("random", &[]); // random person
-        let err = contract
-            .execute(deps.as_mut(), mock_env(), random, mint_msg.clone())
+        let err = entry::execute(deps.as_mut(), mock_env(), john, transfer_msg)
             .unwrap_err();
         assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
 
     }
 
     #[test]
-    fn different_minter_and_admin() {
+    fn sending_nft() {
         let mut deps = mock_dependencies();
-        let contract = Cw721NonTransferableContract::default();
 
-        let info = mock_info("creator", &[]);
-
-        // admin and minter are different
-        let msg = InstantiateMsg {
-            admin: Some("admin".to_string()),
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
+        let info = mock_info(CREATOR, &[]);
+        let init_msg = InstantiateMsg {
+            name: "SpaceShips".to_string(),
+            symbol: "SPACE".to_string(),
+            minter: CREATOR.to_string(),
         };
-
-        let config = Config {
-            admin: if let Some(admin) = &msg.admin {
-                Some(Addr::unchecked(admin.clone()))
-            } else {
-                None
-            },
-        };
-
-        CONFIG.save(&mut deps.storage, &config).unwrap();
-
-         // query the state
-        let state = CONFIG.load(&deps.storage).unwrap();
-        assert_eq!(
-            state,
-            Config {
-                admin: Some(Addr::unchecked("admin"))
-            }
-        );
-
-        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
-        };
-
-        contract
-            .instantiate(deps.as_mut(), mock_env(), info.clone(), cw721_base_instantiate_msg)
-            .unwrap();
-
-        let token_uri = None;
-        let metadata_extension = Some(Metadata {
-            description: Some("Description for metadata".into()),
-            name: Some("TEST".to_string()),
+        entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
+    
+        // Mint a token
+        let token_id = "Enterprise";
+        let token_uri = Some("https://starships.example.com/Starship/Enterprise.json".into());
+        let extension = Some(Metadata {
+            description: Some("Spaceship with Warp Drive".into()),
+            name: Some("Starship USS Enterprise".to_string()),
             ..Metadata::default()
         });
-
-        let token_id = "1";
         let mint_msg = ExecuteMsg::Mint {
             token_id: token_id.to_string(),
-            owner: "owner".to_string(), // here minter is the owner not the admin
+            owner: "john".to_string(),
             token_uri: token_uri.clone(),
-            extension: metadata_extension.clone(),
+            extension: extension.clone(),
+        };
+        entry::execute(deps.as_mut(), mock_env(), info.clone(), mint_msg).unwrap();
+    
+        let msg = to_binary("You now have the NFT").unwrap();
+        let target = String::from("another_contract");
+        let send_msg = ExecuteMsg::SendNft {
+            contract: target.clone(),
+            token_id: token_id.to_string().clone(),
+            msg: msg.clone(),
         };
 
-        // admin cannot mint if it is not the same with the minter
-        let info_admin = mock_info("admin", &[]);
-        let err = contract
-        .execute(deps.as_mut(), mock_env(), info_admin, mint_msg.clone())
-        .unwrap_err();
+        let random = mock_info("random", &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, send_msg.clone())
+            .unwrap_err();
+        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
 
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner)); // so admin and the minter should be the same
+        // owner of the NFT also cannot transfer, i.e. it is non-transferable
+        let random = mock_info("venus", &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, send_msg.clone())
+            .unwrap_err();
+
+        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
 
     }
-
-    #[test]
-    fn check_admin_response() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg {
-            admin: Some(MINTER.to_string()),
-            name: "TEST TOKEN".to_string(),
-            symbol: "TEST".to_string(),
-            minter: MINTER.to_string(),
-        };
-
-        let config = Config {
-            admin: if let Some(admin) = &msg.admin {
-                Some(Addr::unchecked(admin.clone()))
-            } else {
-                None
-            },
-        };
-
-        CONFIG.save(&mut deps.storage, &config).unwrap();
-
-        let check_admin: AdminResponse = from_binary(&entry::query(deps.as_ref(), mock_env(), QueryMsg::Admin {}).unwrap()).unwrap();
-        assert_eq!(check_admin, AdminResponse {
-            admin: Some(MINTER.to_string())
-        });
-        
-    }
-
 }
