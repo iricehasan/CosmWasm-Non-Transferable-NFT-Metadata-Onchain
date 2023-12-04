@@ -8,7 +8,7 @@ initialize_owner(deps.storage, deps.api, Some(info.sender.as_str().clone()))?;
 and 
 
 ```rust
-assert_owner(deps.storage, &info.sender)?;
+get_ownership(deps.storage)?.owner;
 ```
 to check only contract owner can execute with the additional feature of onchain metadata:
 
