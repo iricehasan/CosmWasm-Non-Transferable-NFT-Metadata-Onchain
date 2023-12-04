@@ -1,9 +1,17 @@
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::Empty;
-use cw_ownable::{OwnershipError, assert_owner, initialize_owner};
+
+use cw_ownable::{OwnershipError, get_ownership, initialize_owner};
 pub use cw721_base::{
-    Cw721Contract, InstantiateMsg, MinterResponse, ContractError
+    Cw721Contract, InstantiateMsg as Cw721BaseInstantiateMsg, MinterResponse
 };
+
+pub use crate::msg::InstantiateMsg;
+
+pub mod msg;
+pub mod error;
+
+pub use crate::error::ContractError;
 
 #[cw_serde]
 pub struct Trait {
@@ -49,12 +57,12 @@ pub mod entry {
         info: MessageInfo,
         msg: InstantiateMsg,
     ) -> Result<Response, OwnershipError> {
-        initialize_owner(deps.storage, deps.api, Some(info.sender.as_str().clone()))?;
+        initialize_owner(deps.storage, deps.api, msg.admin.as_deref())?;
         
-        let cw721_base_instantiate_msg = InstantiateMsg {
+        let cw721_base_instantiate_msg = Cw721BaseInstantiateMsg {
             name: msg.name,
             symbol: msg.symbol,
-            minter: info.sender.to_string().clone(),
+            minter: msg.minter,
         };
 
         Cw721NonTransferableContract::default().instantiate(
@@ -78,16 +86,33 @@ pub mod entry {
         info: MessageInfo,
         msg: ExecuteMsg,
     ) -> Result<Response, ContractError> {
-        
-        assert_owner(deps.storage, &info.sender)?;
-
-        Cw721NonTransferableContract::default().execute(deps, env, info, msg).map_err(Into::into)
-        
+        let owner = get_ownership(deps.storage)?.owner;
+        match owner {
+            Some(owner) => {
+                if owner != info.sender {
+                    return Err(ContractError::Unauthorized {});
+                }
+                Cw721NonTransferableContract::default().execute(deps, env, info, msg).map_err(Into::into)
+            } 
+            None => match msg {
+                ExecuteMsg::Mint {
+                    token_id,
+                    owner,
+                    token_uri,
+                    extension,
+                } => Cw721NonTransferableContract::default()
+                    .mint(deps, info, token_id, owner, token_uri, extension).map_err(Into::into),
+                _ => Err(ContractError::Ownership(
+                    cw721_base::OwnershipError::NotOwner,
+                )),
+            },
+        }
+       
     }
     
     #[entry_point]
     pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
-        
+    
         Cw721NonTransferableContract::default().query(deps, env, msg)
         
     }
@@ -101,8 +126,131 @@ mod tests {
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use cosmwasm_std::to_binary;
     use cw721::Cw721Query;
+    use cw_ownable;
 
     const CREATOR: &str = "creator";
+    const MINTER: &str = "minter";
+
+    #[test]
+    fn no_owner() {
+        let mut deps = mock_dependencies();
+        let contract = Cw721NonTransferableContract::default();
+
+        let info = mock_info(CREATOR, &[]);
+        let init_msg = InstantiateMsg {
+            admin: None,
+            name: "SpaceShips".to_string(),
+            symbol: "SPACE".to_string(),
+            minter: MINTER.to_string(),
+        };
+        entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
+
+        let token_id = "Enterprise";
+        let token_uri = Some("https://starships.example.com/Starship/Enterprise.json".into());
+        let extension = Some(Metadata {
+            description: Some("Spaceship with Warp Drive".into()),
+            name: Some("Starship USS Enterprise".to_string()),
+            ..Metadata::default()
+        });
+        let exec_msg = ExecuteMsg::Mint {
+            token_id: token_id.to_string(),
+            owner: "john".to_string(),
+            token_uri: token_uri.clone(),
+            extension: extension.clone(),
+        };
+
+        // random cannot mint
+        let random = mock_info("random", &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, exec_msg.clone())
+            .unwrap_err();
+        assert_eq!(err, ContractError::Unauthorized {});
+
+        // minter can mint
+        let allowed = mock_info(MINTER, &[]);
+        let _ = entry::execute(deps.as_mut(), mock_env(), allowed, exec_msg).unwrap();
+
+        // ensure num tokens increases
+        let count = contract.num_tokens(deps.as_ref()).unwrap();
+        assert_eq!(1, count.count);
+        
+        let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
+        assert_eq!(res.token_uri, token_uri);
+        assert_eq!(res.extension, extension);
+
+        // minter cannot transfer
+        let random = mock_info(MINTER, &[]);
+        let transfer_msg = ExecuteMsg::TransferNft {
+            recipient: String::from("random"),
+            token_id: token_id.to_string().clone(),
+        };
+
+        let err = entry::execute(deps.as_mut(), mock_env(), random, transfer_msg)
+            .unwrap_err();
+        assert_eq!(err, ContractError::Base(cw721_base::ContractError::Ownership(cw_ownable::OwnershipError::NotOwner)));
+
+        // minter cannot send
+
+        let msg = to_binary("You now have the NFT").unwrap();
+        let target = String::from("another_contract");
+        let send_msg = ExecuteMsg::SendNft {
+            contract: target.clone(),
+            token_id: token_id.to_string().clone(),
+            msg: msg.clone(),
+        };
+
+        let random = mock_info(MINTER, &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, send_msg.clone())
+            .unwrap_err();
+        assert_eq!(err, ContractError::Base(cw721_base::ContractError::Ownership(cw_ownable::OwnershipError::NotOwner)));
+
+
+    }
+    #[test]
+    fn minter_and_admin_should_be_same() {
+        let mut deps = mock_dependencies();
+        let contract = Cw721NonTransferableContract::default();
+
+        let info = mock_info(CREATOR, &[]);
+        let init_msg = InstantiateMsg {
+            admin: Some(CREATOR.to_string()),
+            name: "SpaceShips".to_string(),
+            symbol: "SPACE".to_string(),
+            minter: MINTER.to_string(),
+        };
+        entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
+
+        let token_id = "Enterprise";
+        let token_uri = Some("https://starships.example.com/Starship/Enterprise.json".into());
+        let extension = Some(Metadata {
+            description: Some("Spaceship with Warp Drive".into()),
+            name: Some("Starship USS Enterprise".to_string()),
+            ..Metadata::default()
+        });
+        let exec_msg = ExecuteMsg::Mint {
+            token_id: token_id.to_string(),
+            owner: "john".to_string(),
+            token_uri: token_uri.clone(),
+            extension: extension.clone(),
+        };
+
+        // admin cannot mint
+        let random = mock_info(CREATOR, &[]);
+        let err = entry::execute(deps.as_mut(), mock_env(), random, exec_msg.clone())
+            .unwrap_err();
+        assert_eq!(err, ContractError::Unauthorized {});
+
+        // minter can mint
+        let allowed = mock_info(MINTER, &[]);
+        let _ = entry::execute(deps.as_mut(), mock_env(), allowed, exec_msg).unwrap();
+
+        // ensure num tokens increases
+        let count = contract.num_tokens(deps.as_ref()).unwrap();
+        assert_eq!(1, count.count);
+        
+        let res = contract.nft_info(deps.as_ref(), token_id.into()).unwrap();
+        assert_eq!(res.token_uri, token_uri);
+        assert_eq!(res.extension, extension);
+    }
 
     #[test]
     fn only_owner_can_mint() {
@@ -111,6 +259,7 @@ mod tests {
 
         let info = mock_info(CREATOR, &[]);
         let init_msg = InstantiateMsg {
+            admin: Some(CREATOR.to_string()),
             name: "SpaceShips".to_string(),
             symbol: "SPACE".to_string(),
             minter: CREATOR.to_string(),
@@ -135,7 +284,7 @@ mod tests {
         let random = mock_info("random", &[]);
         let err = entry::execute(deps.as_mut(), mock_env(), random, exec_msg.clone())
             .unwrap_err();
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
+        assert_eq!(err, ContractError::Unauthorized {});
 
         // creator can mint
         let allowed = mock_info(CREATOR, &[]);
@@ -156,10 +305,12 @@ mod tests {
 
         let info = mock_info(CREATOR, &[]);
         let init_msg = InstantiateMsg {
+            admin: Some(CREATOR.to_string()),
             name: "SpaceShips".to_string(),
             symbol: "SPACE".to_string(),
             minter: CREATOR.to_string(),
         };
+
         entry::instantiate(deps.as_mut(), mock_env(), info.clone(), init_msg).unwrap();
 
         // Mint a token
@@ -188,7 +339,7 @@ mod tests {
 
         let err = entry::execute(deps.as_mut(), mock_env(), random, transfer_msg)
             .unwrap_err();
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
+        assert_eq!(err, ContractError::Unauthorized {});
 
         // owner of the NFT also cannot transfer, i.e. it is non-transferable
         let john = mock_info("john", &[]);
@@ -199,7 +350,7 @@ mod tests {
 
         let err = entry::execute(deps.as_mut(), mock_env(), john, transfer_msg)
             .unwrap_err();
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
+        assert_eq!(err, ContractError::Unauthorized {});
 
     }
 
@@ -209,6 +360,7 @@ mod tests {
 
         let info = mock_info(CREATOR, &[]);
         let init_msg = InstantiateMsg {
+            admin: Some(CREATOR.to_string()),
             name: "SpaceShips".to_string(),
             symbol: "SPACE".to_string(),
             minter: CREATOR.to_string(),
@@ -242,14 +394,14 @@ mod tests {
         let random = mock_info("random", &[]);
         let err = entry::execute(deps.as_mut(), mock_env(), random, send_msg.clone())
             .unwrap_err();
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
+        assert_eq!(err, ContractError::Unauthorized {});
 
         // owner of the NFT also cannot transfer, i.e. it is non-transferable
         let random = mock_info("venus", &[]);
         let err = entry::execute(deps.as_mut(), mock_env(), random, send_msg.clone())
             .unwrap_err();
 
-        assert_eq!(err, ContractError::Ownership(OwnershipError::NotOwner));
+        assert_eq!(err, ContractError::Unauthorized {});
 
     }
 }

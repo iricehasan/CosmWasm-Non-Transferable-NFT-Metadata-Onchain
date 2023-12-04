@@ -51,4 +51,4 @@ fn main() {
     }
 }
 ```
-which was more complex in the [`c721-non-transferable`](https://github.com/CosmWasm/cw-nfts/tree/main/contracts/cw721-non-transferable).
+which was more complex in the [`cw721-non-transferable`](https://github.com/CosmWasm/cw-nfts/tree/main/contracts/cw721-non-transferable).
